@@ -1,0 +1,18 @@
+# Web
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+httpx==0.27.2
+
+# Config
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# Orchestration
+langgraph==0.2.59
+langchain-core==0.3.28
+
+# LLM client (optional — used in 'direct' mode for local dev)
+# litellm==1.55.4   # uncomment if you swap to LiteLLM for multi-provider routing
+
+#Unit test
+pytest

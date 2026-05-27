@@ -1,129 +1,264 @@
 """
-BDC data product query interface.
+Seed data for the port-congestion scenario.
 
-This is the single chokepoint between the agent crew and the data layer.
-Every agent calls one of these functions; no agent reads seed data directly.
+This is what BDC would return if it were live. Every record traces to a specific
+data product and represents what the harmonised data layer would serve. The
+agents don't see this module — they see the query functions in
+bdc_data_products.py, which read from here.
 
-In production: each function's body is replaced by a Datasphere client call
-that queries the corresponding BDC data product. Function signatures and
-return types stay identical, so the swap is contained to this module.
-
-The six data products correspond to:
-  DP1 Shipment                       -> get_shipment, get_shipments_at_port
-  DP2 Supplier and Alternates        -> get_supplier, get_alternate_suppliers
-  DP3 Cross-Entity Inventory         -> get_inventory_for_sku
-  DP4 Customer Commitments           -> get_commitments_for_shipment
-  DP5 Port and Logistics Events      -> get_active_port_events, get_events_for_port
-  DP6 Historical Disruption Patterns -> get_historical_pattern
+When swapping to live BDC: replace bdc_data_products.py's implementations with
+Datasphere client calls. This _seed_data module is no longer needed in
+production.
 """
 from __future__ import annotations
 
-import logging
-from typing import Optional
+from datetime import date, datetime, timezone
 
-from . import _seed_data as seed
-from .bdc_models import (
+from .models import (
     Commitment,
     DisruptionPattern,
-    EventType,
     InventoryPosition,
     PortEvent,
     Shipment,
-    ShipmentStatus,
     Supplier,
 )
 
-logger = logging.getLogger(__name__)
+NOW = datetime(2026, 5, 26, 8, 42, 0, tzinfo=timezone.utc)
 
 
 # ============================================================================
-# DP1 — Shipment
+# DP5 — Port and Logistics Events (active disruption events)
 # ============================================================================
-def get_shipment(po_number: str) -> Optional[Shipment]:
-    """Fetch a single shipment by PO number."""
-    logger.debug("BDC query: get_shipment(%s)", po_number)
-    return next((s for s in seed.SHIPMENTS if s.po_number == po_number), None)
-
-
-def get_shipments_at_port(
-    port_code: str,
-    status: Optional[ShipmentStatus] = None,
-) -> list[Shipment]:
-    """All shipments inbound to or sourcing from the given port (UN/LOCODE)."""
-    logger.debug("BDC query: get_shipments_at_port(%s, status=%s)", port_code, status)
-    matches = [
-        s for s in seed.SHIPMENTS
-        if s.source_port_code == port_code or s.destination_port_code == port_code
-    ]
-    if status is not None:
-        matches = [s for s in matches if s.status == status]
-    return matches
-
-
-# ============================================================================
-# DP2 — Supplier and Alternate Suppliers
-# ============================================================================
-def get_supplier(supplier_id: str) -> Optional[Supplier]:
-    """Single supplier lookup."""
-    logger.debug("BDC query: get_supplier(%s)", supplier_id)
-    return next((s for s in seed.SUPPLIERS if s.supplier_id == supplier_id), None)
-
-
-def get_alternate_suppliers(sku: str, exclude_supplier_id: str = "") -> list[Supplier]:
-    """All suppliers that can provide the given SKU, optionally excluding one."""
-    logger.debug(
-        "BDC query: get_alternate_suppliers(sku=%s, exclude=%s)", sku, exclude_supplier_id
+PORT_EVENTS: list[PortEvent] = [
+    PortEvent(
+        event_id="EVT-CNSHA-2026-05-26-001",
+        event_type="port_congestion",
+        location_type="port",
+        location_code="CNSHA",
+        location_name="Port of Shanghai",
+        severity="critical",
+        started_at=datetime(2026, 5, 26, 6, 15, 0, tzinfo=timezone.utc),
+        expected_duration_days=10,
+        cause_description=(
+            "Typhoon Maemi storm surge backlog plus extended customs processing"
+        ),
+        affected_vessels=47,
+        affected_carrier_ids=["MAERSK-PAC", "EVERGREEN-AS", "ONE-NETWORK"],
+        reported_by="Port Operations API (GCP)",
+        confidence="high",
+        last_updated=NOW,
     )
-    return [
-        s for s in seed.SUPPLIERS
-        if sku in s.skus_supplied and s.supplier_id != exclude_supplier_id
-    ]
+]
 
 
 # ============================================================================
-# DP3 — Cross-Entity Inventory Position
+# DP1 — Shipments
 # ============================================================================
-def get_inventory_for_sku(sku: str) -> list[InventoryPosition]:
-    """Inventory positions for an SKU across all entities and warehouses."""
-    logger.debug("BDC query: get_inventory_for_sku(%s)", sku)
-    return [p for p in seed.INVENTORY if p.sku == sku]
+SHIPMENTS: list[Shipment] = [
+    Shipment(
+        po_number="PO-PRM-2026-08-2241",
+        entity="PrismCorp APAC",
+        supplier_id="ARB-78421",
+        material_sku="FLT-XR-9924",
+        quantity=8400,
+        uom="units",
+        containers=12,
+        shipment_value_usd=2_840_000.0,
+        source_port_code="CNSHA",
+        destination_port_code="SGSIN",
+        original_eta=date(2026, 6, 2),
+        current_eta=date(2026, 6, 2),  # Carrier hasn't updated yet — agent predicts slip
+        status="in_transit",
+        carrier_id="MAERSK-PAC",
+        last_updated=NOW,
+    )
+]
 
 
 # ============================================================================
-# DP4 — Customer Commitments
+# DP2 — Suppliers (primary + alternates for FLT-XR-9924)
 # ============================================================================
-def get_commitments_for_shipment(po_number: str) -> list[Commitment]:
-    """All customer commitments that depend on the given shipment."""
-    logger.debug("BDC query: get_commitments_for_shipment(%s)", po_number)
-    return [c for c in seed.COMMITMENTS if c.supplying_po == po_number]
+SUPPLIERS: list[Supplier] = [
+    Supplier(
+        supplier_id="ARB-78421",
+        supplier_name="Meridian Pacific Components Ltd",
+        region="China",
+        tier="tier1_strategic",
+        quality_rating="AA",
+        skus_supplied=["FLT-XR-9924", "FLT-XR-9925", "FLT-XR-9926"],
+        typical_lead_time_days=18,
+        price_index=1.00,
+        max_capacity_per_month=12000,
+        current_capacity_status="constrained",  # affected by typhoon
+        contract_status="active",
+    ),
+    Supplier(
+        supplier_id="ARB-91244",
+        supplier_name="Sentinel Filtration GmbH",
+        region="Germany",
+        tier="tier1",
+        quality_rating="AA",
+        skus_supplied=["FLT-XR-9924", "FLT-XR-9925", "FLT-XR-9980"],
+        typical_lead_time_days=14,
+        price_index=1.08,
+        max_capacity_per_month=8500,
+        current_capacity_status="available",
+        contract_status="framework_only",
+    ),
+    Supplier(
+        supplier_id="ARB-66021",
+        supplier_name="Pacific Components Express",
+        region="Vietnam",
+        tier="tier2",
+        quality_rating="A",
+        skus_supplied=["FLT-XR-9924"],
+        typical_lead_time_days=9,
+        price_index=1.12,
+        max_capacity_per_month=5000,
+        current_capacity_status="available",
+        contract_status="framework_only",
+    ),
+]
 
 
 # ============================================================================
-# DP5 — Port and Logistics Events
+# DP3 — Cross-Entity Inventory Position (for SKU FLT-XR-9924)
 # ============================================================================
-def get_active_port_events() -> list[PortEvent]:
-    """All currently-active disruption events."""
-    logger.debug("BDC query: get_active_port_events()")
-    return list(seed.PORT_EVENTS)
+INVENTORY: list[InventoryPosition] = [
+    InventoryPosition(
+        sku="FLT-XR-9924",
+        entity="PrismCorp APAC",
+        warehouse_id="WH-SIN-01",
+        warehouse_region="Singapore",
+        on_hand=420,
+        committed=380,
+        available=40,
+        in_transit_to=8400,  # the affected shipment
+        transfer_lead_days_to={
+            "PrismCorp EMEA": 11,
+            "PrismCorp AMER": 14,
+            "PrismCorp APAC": 0,
+            "PrismCorp LATAM": 16,
+            "PrismCorp MENA": 9,
+        },
+        transfer_cost_per_unit_usd={
+            "PrismCorp EMEA": 11.05,
+            "PrismCorp AMER": 20.00,
+            "PrismCorp APAC": 0.0,
+            "PrismCorp LATAM": 22.40,
+            "PrismCorp MENA": 8.10,
+        },
+        last_updated=NOW,
+    ),
+    InventoryPosition(
+        sku="FLT-XR-9924",
+        entity="PrismCorp EMEA",
+        warehouse_id="WH-ROT-01",
+        warehouse_region="Rotterdam, NL",
+        on_hand=3800,
+        committed=0,
+        available=3800,
+        in_transit_to=0,
+        transfer_lead_days_to={
+            "PrismCorp APAC": 11,
+            "PrismCorp AMER": 8,
+            "PrismCorp EMEA": 0,
+            "PrismCorp LATAM": 12,
+            "PrismCorp MENA": 6,
+        },
+        transfer_cost_per_unit_usd={
+            "PrismCorp APAC": 11.05,
+            "PrismCorp AMER": 7.40,
+            "PrismCorp EMEA": 0.0,
+            "PrismCorp LATAM": 9.80,
+            "PrismCorp MENA": 5.50,
+        },
+        last_updated=NOW,
+    ),
+    InventoryPosition(
+        sku="FLT-XR-9924",
+        entity="PrismCorp AMER",
+        warehouse_id="WH-HOU-01",
+        warehouse_region="Houston, US",
+        on_hand=1900,
+        committed=0,
+        available=1900,
+        in_transit_to=0,
+        transfer_lead_days_to={
+            "PrismCorp APAC": 14,
+            "PrismCorp EMEA": 10,
+            "PrismCorp AMER": 0,
+            "PrismCorp LATAM": 5,
+            "PrismCorp MENA": 12,
+        },
+        transfer_cost_per_unit_usd={
+            "PrismCorp APAC": 20.00,
+            "PrismCorp EMEA": 12.30,
+            "PrismCorp AMER": 0.0,
+            "PrismCorp LATAM": 8.50,
+            "PrismCorp MENA": 14.20,
+        },
+        last_updated=NOW,
+    ),
+]
 
 
-def get_events_for_port(port_code: str) -> list[PortEvent]:
-    """Disruption events affecting a specific port."""
-    logger.debug("BDC query: get_events_for_port(%s)", port_code)
-    return [e for e in seed.PORT_EVENTS if e.location_code == port_code]
+# ============================================================================
+# DP4 — Customer Commitments (depending on the affected PO)
+# ============================================================================
+COMMITMENTS: list[Commitment] = [
+    Commitment(
+        commitment_id="CMT-HELIOS-2026-Q2-088",
+        customer_id="CST-HELIOS-001",
+        customer_name="Helios Energy Systems",
+        customer_region="Singapore",
+        contract_tier="platinum",
+        sku="FLT-XR-9924",
+        committed_quantity=6200,
+        deadline=date(2026, 6, 8),
+        supplying_po="PO-PRM-2026-08-2241",
+        sla_penalty_per_day_usd=14_000.0,
+        sla_penalty_cap_usd=84_000.0,
+        order_value_usd=740_000.0,
+        status="pending",
+    ),
+    Commitment(
+        commitment_id="CMT-TRITON-2026-Q2-041",
+        customer_id="CST-TRITON-001",
+        customer_name="Triton Marine Tech",
+        customer_region="Malaysia",
+        contract_tier="gold",
+        sku="FLT-XR-9924",
+        committed_quantity=2200,
+        deadline=date(2026, 6, 10),
+        supplying_po="PO-PRM-2026-08-2241",
+        sla_penalty_per_day_usd=5_500.0,
+        sla_penalty_cap_usd=31_000.0,
+        order_value_usd=500_000.0,
+        status="pending",
+    ),
+]
 
 
 # ============================================================================
 # DP6 — Historical Disruption Patterns
 # ============================================================================
-def get_historical_pattern(
-    event_type: EventType,
-    location_code: str,
-) -> Optional[DisruptionPattern]:
-    """Lookup historical pattern for this event type at this location."""
-    logger.debug("BDC query: get_historical_pattern(%s, %s)", event_type, location_code)
-    return next(
-        (p for p in seed.PATTERNS
-         if p.event_type == event_type and p.location_code == location_code),
-        None,
+PATTERNS: list[DisruptionPattern] = [
+    DisruptionPattern(
+        pattern_id="PAT-CNSHA-PORT_CONGESTION",
+        event_type="port_congestion",
+        location_code="CNSHA",
+        occurrence_count=4,
+        time_window="last_3_years",
+        avg_duration_days=9.5,
+        avg_recovery_days=8.0,
+        seasonality_pattern="typhoon_season",
+        last_occurrence_date=date(2025, 7, 14),
+        typical_root_causes=["typhoon", "customs_backlog", "labor_action"],
+        typical_resolution_paths=[
+            "alternate_supplier_emea",
+            "internal_transfer_emea",
+            "expedited_freight",
+        ],
     )
+]
