@@ -1,9 +1,12 @@
 """
 FastAPI backend for the Logistics Assistant POC.
 
-This service exposes the risk-detection logic as a REST API.
-In the POC, the API is triggered manually (e.g. from a Streamlit button).
-In production, the same endpoint could be triggered by a scheduler or Joule/A2A.
+This service exposes:
+- deterministic risk detection (no LLM) via /risk-check
+- agentic diagnosis (LLM) via /diagnosis
+
+In the POC, these endpoints are triggered manually from the Streamlit UI.
+In production, the same endpoints could be triggered by a scheduler or Joule/A2A.
 
 Key design principles:
 - UI is thin
@@ -16,9 +19,14 @@ from typing import List
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-# Import risk detection logic
+# Deterministic risk detection logic
 from backend.polling.risk_detector import run_risk_check, DetectedRisk
+
+# Agentic diagnosis (Issue Resolution Agent)
+from ai.agents.logistics_issue_resolution import run as run_issue_resolution
+from ai.agents.schemas import LogisticsIssueResolutionOutput
 
 
 # -----------------------------------------------------------------------------
@@ -27,22 +35,28 @@ from backend.polling.risk_detector import run_risk_check, DetectedRisk
 app = FastAPI(
     title="Logistics Assistant POC API",
     description="Backend API for risk detection and decision support",
-    version="0.1.0",
+    version="0.2.0",
 )
-
 
 # -----------------------------------------------------------------------------
 # CORS configuration (POC ONLY)
 # -----------------------------------------------------------------------------
-# This allows Streamlit (running on a different port) to call the API.
-# In production, this should be locked down to specific origins.
+# Streamlit calls backend via Python requests (CORS not strictly required),
+# but keeping this is fine for future browser-based calls.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # POC only
+    allow_origins=["*"],  # POC only
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -----------------------------------------------------------------------------
+# Request schemas
+# -----------------------------------------------------------------------------
+class DiagnosisRequest(BaseModel):
+    po_number: str
+    triggering_event_id: str
 
 
 # -----------------------------------------------------------------------------
@@ -50,14 +64,12 @@ app.add_middleware(
 # -----------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    """
-    Simple health endpoint for sanity checks.
-    """
+    """Simple health endpoint for sanity checks."""
     return {"status": "ok"}
 
 
 # -----------------------------------------------------------------------------
-# Risk detection endpoint
+# Risk detection endpoint (deterministic)
 # -----------------------------------------------------------------------------
 @app.post("/risk-check", response_model=List[DetectedRisk])
 def risk_check():
@@ -70,5 +82,25 @@ def risk_check():
     - performs no scheduling (manual trigger in POC)
     """
     now = datetime.now(timezone.utc)
-    risks = run_risk_check(now)
-    return risks
+    return run_risk_check(now)
+
+
+# -----------------------------------------------------------------------------
+# Diagnosis endpoint (agentic)
+# -----------------------------------------------------------------------------
+@app.post("/diagnosis", response_model=LogisticsIssueResolutionOutput)
+def diagnosis(req: DiagnosisRequest):
+    """
+    Run the Logistics Issue Resolution Agent for a selected risk.
+
+    Input:
+    - po_number
+    - triggering_event_id
+
+    Output:
+    - typed LogisticsIssueResolutionOutput (validated by Pydantic)
+    """
+    return run_issue_resolution(
+        po_number=req.po_number,
+        triggering_event_id=req.triggering_event_id,
+    )

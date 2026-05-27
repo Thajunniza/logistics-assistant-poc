@@ -24,3 +24,17 @@ def run_risk_check() -> list[dict]:
     r = requests.post(f"{API_BASE_URL}/risk-check", timeout=30)
     r.raise_for_status()
     return r.json()
+
+
+def get_diagnosis(po_number: str, triggering_event_id: str):
+    response = requests.post(
+        f"{API_BASE_URL}/diagnosis",
+        json={
+            "po_number": po_number,
+            "triggering_event_id": triggering_event_id,
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+

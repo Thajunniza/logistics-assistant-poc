@@ -15,6 +15,7 @@ from ui.components.risk_panel import render_risk_panel
 from ui.components.detail_panel import render_detail_panel
 from ui.components.approval_panel import render_approval_panel
 from ui.components.chat_panel import render_chat_panel
+from ui.components.diagnosis_card import render_diagnosis_card
 
 
 def main():
@@ -46,6 +47,7 @@ def main():
         render_risk_panel()
 
     with right:
+        render_diagnosis_card()
         render_detail_panel()
         st.divider()
         render_approval_panel()

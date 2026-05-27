@@ -24,3 +24,7 @@ def init_state():
 
     if "approved_option" not in st.session_state:
         st.session_state.approved_option = None
+
+    if "diagnosis" not in st.session_state:
+        st.session_state.diagnosis = None
+
