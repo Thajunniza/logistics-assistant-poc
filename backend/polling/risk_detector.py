@@ -1,30 +1,20 @@
 """
-Risk detection (polling) logic for the Logistics Assistant POC.
+Risk detection logic for the Logistics Assistant POC.
 
-This module implements the core behaviour that turns harmonised BDC data
-into actionable delivery risks.
-
-IMPORTANT DESIGN NOTES
-----------------------
-- This file contains *no scheduling logic*.
-  In production, this function would be triggered every N minutes by a scheduler.
-  In the POC, it is triggered manually (e.g. via a UI button).
-
-- This module does NOT talk to SAP systems or non-SAP APIs.
-  It reads only from the BDC query interface (data_product.py).
-
-- The output of this module is a *decision object* ("DetectedRisk"),
-  not a data product. This is the boundary between data and reasoning.
+Design principles:
+- Deterministic, explainable detection (NO agentic AI here)
+- One consolidated risk per shipment (PO)
+- Explicit severity classification (VERY HIGH vs HIGH)
+- Fully auditable and governance-friendly
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from typing import List, Set
 
 from pydantic import BaseModel
 
-# BDC query interface (single chokepoint to data)
 from backend.bdc.data_products import (
     get_active_port_events,
     get_shipments_at_port,
@@ -33,23 +23,12 @@ from backend.bdc.data_products import (
 
 
 # =============================================================================
-# Decision Object: DetectedRisk
+# Decision Object — DetectedRisk
 # =============================================================================
 class DetectedRisk(BaseModel):
-    """
-    A decision-ready representation of a delivery risk.
-
-    This is NOT a BDC data product.
-    It is derived by reasoning across multiple BDC data products.
-
-    This object is what:
-    - the UI displays in the "Risk List"
-    - the orchestrator uses to activate agents
-    """
-
     event_id: str
     po_number: str
-    risk_level: str
+    risk_level: str              # VERY HIGH | HIGH
     cause: str
     predicted_delay_days: int
     customers_impacted: list[str]
@@ -58,92 +37,101 @@ class DetectedRisk(BaseModel):
 
 
 # =============================================================================
-# Core Function: run_risk_check
+# Core Detection Function
 # =============================================================================
 def run_risk_check(now: datetime) -> List[DetectedRisk]:
     """
-    Execute one full risk-detection pass.
+    Execute one deterministic risk-detection pass.
 
-    This function represents ONE polling cycle.
+    Logic flow:
+    Event → Shipments → Commitments → Materiality → Severity → Emit Risk
 
-    Steps performed:
-    1. Read active logistics disruption events from BDC (DP5)
-    2. For each event, find affected shipments (DP1)
-    3. For each shipment, find dependent customer commitments (DP4)
-    4. Apply materiality thresholds
-    5. Return a list of detected risks
-
-    In the POC:
-    - This function is triggered manually from the UI
-
-    In production:
-    - This function would be triggered on a schedule (e.g. every 5 minutes)
+    Guarantees:
+    - ONE risk per shipment (PO)
+    - No duplicate risks
     """
 
     detected_risks: List[DetectedRisk] = []
+    seen_shipments: Set[str] = set()   # ✅ de-duplication guard
 
     # -------------------------------------------------------------------------
-    # Step 1 — Fetch active disruption events (Port & Logistics Events)
+    # Step 1 — Fetch active logistics events (BDC DP5)
     # -------------------------------------------------------------------------
     events = get_active_port_events()
 
-    # In most cycles, this list will be empty.
-    # That is normal and expected in production systems.
     for event in events:
 
         # ---------------------------------------------------------------------
-        # Step 2 — Find shipments affected by this event
+        # Step 2 — Find shipments impacted by this event (BDC DP1)
         # ---------------------------------------------------------------------
         shipments = get_shipments_at_port(event.location_code)
 
-        # If no shipments are affected, this event is noise for PrismCorp.
         for shipment in shipments:
 
+            # ✅ Prevent duplicate risk for same PO
+            if shipment.po_number in seen_shipments:
+                continue
+
             # -----------------------------------------------------------------
-            # Step 3 — Find customer commitments depending on this shipment
+            # Step 3 — Fetch customer commitments (BDC DP4)
             # -----------------------------------------------------------------
             commitments = get_commitments_for_shipment(shipment.po_number)
 
-            # If no customer commitments depend on this shipment,
-            # there is no business impact.
+            # No commitments = no business risk
             if not commitments:
                 continue
 
             # -----------------------------------------------------------------
-            # Step 4 — Compute business impact metrics
+            # Step 4 — Compute business impact
             # -----------------------------------------------------------------
             revenue_at_risk = sum(c.order_value_usd for c in commitments)
-            has_platinum_customer = any(
-                c.contract_tier == "platinum" for c in commitments
-            )
+            has_platinum = any(c.contract_tier == "platinum" for c in commitments)
 
             # -----------------------------------------------------------------
-            # Step 5 — Apply materiality thresholds (LOCKED FOR POC)
+            # Step 5 — Materiality gate (RISK vs NON-RISK)
             # -----------------------------------------------------------------
-            #
-            # A risk is considered "material" if ANY of the following is true:
-            #   - Expected delay is >= 5 days
-            #   - Revenue at risk >= $250,000
-            #   - Any impacted customer is Platinum tier
-            #
-            if (
+            is_material_risk = (
                 event.expected_duration_days >= 5
                 or revenue_at_risk >= 250_000
-                or has_platinum_customer
-            ):
-                detected_risks.append(
-                    DetectedRisk(
-                        event_id=event.event_id,
-                        po_number=shipment.po_number,
-                        risk_level="HIGH",
-                        cause=event.event_type,
-                        predicted_delay_days=event.expected_duration_days,
-                        customers_impacted=[
-                            c.customer_name for c in commitments
-                        ],
-                        revenue_at_risk_usd=revenue_at_risk,
-                        detected_at=now,
-                    )
+                or has_platinum
+            )
+
+            if not is_material_risk:
+                continue
+
+            # -----------------------------------------------------------------
+            # Step 6 — Severity classification
+            # -----------------------------------------------------------------
+            #
+            # VERY HIGH:
+            #   - Platinum customer
+            #   - Revenue >= $500K
+            #
+            # HIGH:
+            #   - All other material risks
+            #
+            risk_level = "HIGH"
+
+            if has_platinum and revenue_at_risk >= 500_000:
+                risk_level = "VERY HIGH"
+
+            # -----------------------------------------------------------------
+            # Step 7 — Emit ONE consolidated risk for this shipment
+            # -----------------------------------------------------------------
+            detected_risks.append(
+                DetectedRisk(
+                    event_id=event.event_id,
+                    po_number=shipment.po_number,
+                    risk_level=risk_level,
+                    cause=event.event_type,
+                    predicted_delay_days=event.expected_duration_days,
+                    customers_impacted=[c.customer_name for c in commitments],
+                    revenue_at_risk_usd=revenue_at_risk,
+                    detected_at=now,
                 )
+            )
+
+            # ✅ Mark shipment as processed
+            seen_shipments.add(shipment.po_number)
 
     return detected_risks
