@@ -16,3 +16,7 @@ langchain-core==0.3.28
 
 #Unit test
 pytest
+
+#api
+fastapi
+uvicorn
