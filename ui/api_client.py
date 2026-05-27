@@ -56,4 +56,17 @@ def get_pattern_forecast(po_number: str, triggering_event_id: str):
     response.raise_for_status()
     return response.json()
 
-
+# -----------------------------------------------------------------------------
+# Solution Option endpoint (agentic)
+# -----------------------------------------------------------------------------
+def get_inventory_options(po_number: str, triggering_event_id: str):
+    response = requests.post(
+        f"{API_BASE_URL}/inventory-options",
+        json={
+            "po_number": po_number,
+            "triggering_event_id": triggering_event_id,
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()

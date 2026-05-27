@@ -13,11 +13,12 @@ from ui.state import init_state
 from ui.components.header import render_header
 from ui.components.risk_panel import render_risk_panel
 from ui.components.detail_panel import render_detail_panel
-from ui.components.approval_panel import render_approval_panel
 from ui.components.chat_panel import render_chat_panel
 from ui.components.diagnosis_card import render_diagnosis_card
 from ui.api_client import get_pattern_forecast
 from ui.components.pattern_forecast_card import render_pattern_forecast_card
+from ui.api_client import get_inventory_options
+from ui.components.inventory_options_panel import render_inventory_options_panel
 
 
 
@@ -65,9 +66,19 @@ def main():
         # Render Pattern Forecast if available
         render_pattern_forecast_card()
 
+# Trigger Option Suprivision only when user asks
+        if st.session_state.get("next_step") == "inventory_supervisor" and st.session_state.inventory_options is None:
+            selected = st.session_state.selected_risk
+            with st.spinner("Generating mitigation options…"):
+                st.session_state.inventory_options = get_inventory_options(
+                    po_number=selected["po_number"],
+                    triggering_event_id=selected["event_id"],
+                )
+            st.session_state.next_step = None
+
+        render_inventory_options_panel()
+
         render_detail_panel()
-        st.divider()
-        render_approval_panel()
         st.divider()
         render_chat_panel()
 

@@ -24,7 +24,6 @@ def init_state():
 
     if "approved_option" not in st.session_state:
         st.session_state.approved_option = None
-
     
     if "diagnosis" not in st.session_state:
         st.session_state.diagnosis = None
@@ -34,5 +33,12 @@ def init_state():
 
     if "next_step" not in st.session_state:
         st.session_state.next_step = None
+    
+    if "inventory_options" not in st.session_state:
+        st.session_state.inventory_options = None
+
+    if "approved_option_id" not in st.session_state:
+        st.session_state.approved_option_id = None
+
 
 

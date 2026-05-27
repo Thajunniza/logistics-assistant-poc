@@ -32,7 +32,9 @@ from ai.agents.schemas import LogisticsIssueResolutionOutput
 from ai.agents.pattern_forecast import run as run_pattern_forecast
 from ai.agents.schemas import PatternForecastOutput, LogisticsIssueResolutionOutput
 
-
+# Agentic Option generation (Inventory Supervisor Agent)  
+from ai.agents.inventory_supervisor import run as run_inventory_supervisor
+from ai.agents.schemas import InventorySupervisorOutput
 
 # -----------------------------------------------------------------------------
 # FastAPI application
@@ -68,7 +70,9 @@ class PatternForecastRequest(BaseModel):
     po_number: str
     triggering_event_id: str
 
-
+class InventoryOptionsRequest(BaseModel):
+    po_number: str
+    triggering_event_id: str
 
 # -----------------------------------------------------------------------------
 # Health check
@@ -135,4 +139,34 @@ def pattern_forecast(req: PatternForecastRequest):
         po_number=req.po_number,
         triggering_event_id=req.triggering_event_id,
         diagnosis=diagnosis,
+    )
+
+# -----------------------------------------------------------------------------
+# Solution Option endpoint (agentic)
+# -----------------------------------------------------------------------------
+@app.post("/inventory-options", response_model=InventorySupervisorOutput)
+def inventory_options(req: InventoryOptionsRequest):
+    """
+    Generate mitigation options (Agent 3).
+    This endpoint is recommendation-only.
+    """
+
+    # Agent 1
+    diagnosis = run_issue_resolution(
+        po_number=req.po_number,
+        triggering_event_id=req.triggering_event_id,
+    )
+
+    # Agent 2
+    forecast = run_pattern_forecast(
+        po_number=req.po_number,
+        triggering_event_id=req.triggering_event_id,
+        diagnosis=diagnosis,
+    )
+
+    # Agent 3
+    return run_inventory_supervisor(
+        po_number=req.po_number,
+        diagnosis=diagnosis,
+        pattern_forecast=forecast,
     )

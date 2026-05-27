@@ -57,6 +57,11 @@ Recommendation:
 - structural: systemic; include long-term mitigation posture
 - hybrid: recurring; handle now tactically + flag structural follow-up
 
+Output rules:
+- Return STRICT JSON only (no markdown, no code fences).
+- Do NOT include trailing commas.
+- All fields must be present and match the schema exactly. 
+
 Return JSON that matches the schema exactly. Do not invent fields.
 """
 

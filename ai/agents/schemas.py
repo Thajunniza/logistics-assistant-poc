@@ -58,3 +58,57 @@ class PatternForecastOutput(BaseModel):
     rationale: str = Field(
         description="Short justification explaining why this recommendation fits the pattern"
     )
+
+
+from typing import Literal, List
+from pydantic import BaseModel, Field
+
+
+# ----------------------------
+# Agent 3 — Inventory Supervisor
+# ----------------------------
+
+OptionID = Literal["OPT-A", "OPT-B", "OPT-C"]
+Approach = Literal[
+    "internal_transfer",
+    "alternate_supplier",
+    "expedited_freight",
+    "hybrid",
+    "partial_fulfilment",
+    "structural_follow_up",
+]
+Complexity = Literal["low", "medium", "high"]
+
+
+class MitigationOption(BaseModel):
+    """
+    One mitigation option card shown to the Supply Chain Head.
+    Agent 3 must return exactly three of these (OPT-A/B/C).
+    """
+
+    option_id: OptionID = Field(description="Must be one of OPT-A, OPT-B, OPT-C")
+    title: str = Field(description="Short descriptive title (e.g., 'Rotterdam stock transfer to cover Helios')")
+    approach: Approach = Field(description="Category of mitigation approach")
+
+    description: str = Field(description="1–2 sentences describing what this option does")
+
+    cost_delta_usd: float = Field(description="Incremental cost vs current plan (use realistic values)")
+    sla_recovery_days: int = Field(description="Days until impacted customers are served under this option")
+
+    complexity: Complexity = Field(description="How hard this is to execute operationally")
+    customer_impact: str = Field(description="Specific customer impact wording (mention Helios/Triton etc.)")
+    trade_off: str = Field(description="One honest sentence describing what this option sacrifices")
+
+    # Architecturally important: Agent 3 NEVER chooses the recommendation.
+    recommended: bool = Field(default=False, description="Always false. Orchestrator selects recommendation later.")
+
+
+class InventorySupervisorOutput(BaseModel):
+    """
+    Agent 3 output: exactly three options with quantified trade-offs.
+    No recommendation is made here.
+    """
+
+    options: List[MitigationOption] = Field(description="Exactly three options: OPT-A, OPT-B, OPT-C")
+    notes: str = Field(description="1–2 sentence guidance for the Supply Chain Head")
+    evidence: List[str] = Field(description="3–5 concrete, data-grounded evidence points (inventory/supplier/commitments)")
