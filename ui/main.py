@@ -16,6 +16,9 @@ from ui.components.detail_panel import render_detail_panel
 from ui.components.approval_panel import render_approval_panel
 from ui.components.chat_panel import render_chat_panel
 from ui.components.diagnosis_card import render_diagnosis_card
+from ui.api_client import get_pattern_forecast
+from ui.components.pattern_forecast_card import render_pattern_forecast_card
+
 
 
 def main():
@@ -48,6 +51,20 @@ def main():
 
     with right:
         render_diagnosis_card()
+        
+# Trigger Pattern Forecast only when user asks
+        if st.session_state.get("next_step") == "pattern_forecast" and st.session_state.get("pattern_forecast") is None:
+            selected_risk = st.session_state.get("selected_risk")
+            if selected_risk:
+                with st.spinner("Analysing historical patterns…"):
+                    st.session_state.pattern_forecast = get_pattern_forecast(
+                        po_number=selected_risk["po_number"],
+                        triggering_event_id=selected_risk["event_id"],
+                    )
+
+        # Render Pattern Forecast if available
+        render_pattern_forecast_card()
+
         render_detail_panel()
         st.divider()
         render_approval_panel()

@@ -28,6 +28,11 @@ from backend.polling.risk_detector import run_risk_check, DetectedRisk
 from ai.agents.logistics_issue_resolution import run as run_issue_resolution
 from ai.agents.schemas import LogisticsIssueResolutionOutput
 
+# Agentic Pattern recognition (Pattern Forecast Agent)
+from ai.agents.pattern_forecast import run as run_pattern_forecast
+from ai.agents.schemas import PatternForecastOutput, LogisticsIssueResolutionOutput
+
+
 
 # -----------------------------------------------------------------------------
 # FastAPI application
@@ -57,6 +62,12 @@ app.add_middleware(
 class DiagnosisRequest(BaseModel):
     po_number: str
     triggering_event_id: str
+
+
+class PatternForecastRequest(BaseModel):
+    po_number: str
+    triggering_event_id: str
+
 
 
 # -----------------------------------------------------------------------------
@@ -103,4 +114,25 @@ def diagnosis(req: DiagnosisRequest):
     return run_issue_resolution(
         po_number=req.po_number,
         triggering_event_id=req.triggering_event_id,
+    )
+
+# -----------------------------------------------------------------------------
+# Pattern recognition endpoint (agentic)
+# -----------------------------------------------------------------------------
+@app.post("/pattern-forecast", response_model=PatternForecastOutput)
+def pattern_forecast(req: PatternForecastRequest):
+    """
+    Run Pattern Forecast Agent (Agent 2).
+
+    For now, we call Agent 1 internally to get diagnosis (simple POC wiring).
+    Later, orchestrator will pass diagnosis directly.
+    """
+    diagnosis: LogisticsIssueResolutionOutput = run_issue_resolution(
+        po_number=req.po_number,
+        triggering_event_id=req.triggering_event_id,
+    )
+    return run_pattern_forecast(
+        po_number=req.po_number,
+        triggering_event_id=req.triggering_event_id,
+        diagnosis=diagnosis,
     )

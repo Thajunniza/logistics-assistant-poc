@@ -26,6 +26,9 @@ def run_risk_check() -> list[dict]:
     return r.json()
 
 
+# -----------------------------------------------------------------------------
+# Diagnosis endpoint (agentic)
+# -----------------------------------------------------------------------------
 def get_diagnosis(po_number: str, triggering_event_id: str):
     response = requests.post(
         f"{API_BASE_URL}/diagnosis",
@@ -37,4 +40,20 @@ def get_diagnosis(po_number: str, triggering_event_id: str):
     )
     response.raise_for_status()
     return response.json()
+
+# -----------------------------------------------------------------------------
+# Pattern recognition endpoint (agentic)
+# -----------------------------------------------------------------------------
+def get_pattern_forecast(po_number: str, triggering_event_id: str):
+    response = requests.post(
+        f"{API_BASE_URL}/pattern-forecast",
+        json={
+            "po_number": po_number,
+            "triggering_event_id": triggering_event_id,
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
 
