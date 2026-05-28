@@ -1,78 +1,87 @@
-# ui/components/risk_panel.py
 import streamlit as st
-from ui.api_client import get_diagnosis
 
 
 def render_risk_panel():
     risks = st.session_state.get("risks", [])
-    risk_count = len(risks)
-
-    st.subheader(f"Detected Risks ({risk_count})")
+    st.subheader(f"Detected Risks ({len(risks)})")
 
     if not risks:
         st.info("No material risks detected. Click **Run Risk Check** in the header.")
         return
 
-    # ---------------------------------------------------------------------
-    # Optional filters (simple + POC-friendly)
-    # ---------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # Optional filter (kept simple for POC)
+    # ---------------------------------------------------------
     with st.expander("Filters", expanded=False):
         levels = ["All"] + sorted({r.get("risk_level", "UNKNOWN") for r in risks})
         selected_level = st.selectbox("Risk level", levels, index=0)
 
-    # Apply filter
-    filtered = risks
-    if selected_level != "All":
-        filtered = [r for r in risks if r.get("risk_level") == selected_level]
+    filtered = risks if selected_level == "All" else [
+        r for r in risks if r.get("risk_level") == selected_level
+    ]
 
-    # ---------------------------------------------------------------------
-    # Render each risk row
-    # ---------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # Render each risk
+    # ---------------------------------------------------------
     for idx, risk in enumerate(filtered):
         po = risk.get("po_number", "-")
         lvl = risk.get("risk_level", "-")
         cause = risk.get("cause", "-")
         delay = risk.get("predicted_delay_days", "-")
-        customers = risk.get("customers_impacted", [])
-        cust_count = len(customers)
         revenue = risk.get("revenue_at_risk_usd", 0)
+        customers = risk.get("customers_impacted", [])
+
+        # A risk is considered resolved ONLY if:
+        # - it is currently selected
+        # - AND an option was approved for it
+        is_resolved = (
+            st.session_state.get("risk_status") == "resolved_simulated"
+            and st.session_state.get("selected_risk", {}).get("po_number") == po
+        )
 
         with st.container(border=True):
-            c1, c2, c3 = st.columns([0.20, 0.55, 0.25])
+            c1, c2, c3 = st.columns([0.25, 0.50, 0.25])
 
+            # -------------------------------
+            # Left: Identity
+            # -------------------------------
             with c1:
                 st.markdown(f"**{po}**")
                 st.caption(f"Level: {lvl}")
+                if is_resolved:
+                    st.caption("✅ Resolved (simulated)")
 
+            # -------------------------------
+            # Middle: Context
+            # -------------------------------
             with c2:
                 st.write(f"**Cause:** {cause}")
                 st.write(f"**Delay:** {delay} days")
-                st.caption(f"Customers impacted: {cust_count}")
+                st.caption(f"Customers impacted: {len(customers)}")
 
+            # -------------------------------
+            # Right: Action
+            # -------------------------------
             with c3:
                 st.markdown(f"**${revenue:,.0f}**")
                 st.caption("Revenue at risk")
 
+                # HARD DISABLE: resolved risks cannot be selected again
                 if st.button(
                     "Select",
                     key=f"select_risk_{idx}",
                     use_container_width=True,
+                    disabled=is_resolved,
                 ):
-                    # -----------------------------------------------------
-                    # Store selected risk
-                    # -----------------------------------------------------
+                    # ---------------------------------------------
+                    # New risk selected → RESET ALL DOWNSTREAM STATE
+                    # ---------------------------------------------
                     st.session_state.selected_risk = risk
 
-                    # Reset downstream state
-                    st.session_state.approved = False
-                    st.session_state.approved_option = None
                     st.session_state.diagnosis = None
-
-                    # -----------------------------------------------------
-                    # Call Diagnosis API (agentic)
-                    # -----------------------------------------------------
-                    with st.spinner("Running diagnosis…"):
-                        st.session_state.diagnosis = get_diagnosis(
-                            po_number=risk["po_number"],
-                            triggering_event_id=risk["event_id"],
-                        )
+                    st.session_state.pattern_forecast = None
+                    st.session_state.inventory_options = None
+                    st.session_state.dispatch_plan = None
+                    st.session_state.approved_option_id = None
+                    st.session_state.risk_status = "open"
+                    st.session_state.next_step = None

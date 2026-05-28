@@ -112,3 +112,38 @@ class InventorySupervisorOutput(BaseModel):
     options: List[MitigationOption] = Field(description="Exactly three options: OPT-A, OPT-B, OPT-C")
     notes: str = Field(description="1–2 sentence guidance for the Supply Chain Head")
     evidence: List[str] = Field(description="3–5 concrete, data-grounded evidence points (inventory/supplier/commitments)")
+
+# ----------------------------
+# Agent 4 — Transport Dispatching
+# ----------------------------
+
+
+TargetSystem = Literal[
+    "SAP Ariba",
+    "SAP S/4HANA",
+    "SAP TM",
+    "Integration Suite",
+    "Notifications",
+    "Finance",
+    "Strategic Sourcing",
+]
+
+PlanStatus = Literal["simulated", "ready_to_dispatch"]
+
+class ExecutionStep(BaseModel):
+    step_number: int
+    target_system: TargetSystem
+    action: str
+    details: str
+    estimated_time_minutes: int
+
+class Notification(BaseModel):
+    audience: str
+    message: str
+
+class TransportDispatchPlanOutput(BaseModel):
+    approved_option_id: str
+    execution_steps: List[ExecutionStep]
+    notifications: List[Notification]
+    completion_eta_minutes: int
+    status: PlanStatus = Field(default="simulated")

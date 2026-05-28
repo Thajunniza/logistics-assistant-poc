@@ -39,6 +39,18 @@ def init_state():
 
     if "approved_option_id" not in st.session_state:
         st.session_state.approved_option_id = None
+        
+    if "dispatch_plan" not in st.session_state:
+        st.session_state.dispatch_plan = None
+
+    if "risk_status" not in st.session_state:
+        st.session_state.risk_status = "open"  # open | resolved_simulated
+
+    if "risk_qna_history" not in st.session_state:
+        st.session_state.risk_qna_history = []  # list of {"po":..., "q":..., "a":...}
+
+    if "qna_disabled_after_approval" not in st.session_state:
+        st.session_state.qna_disabled_after_approval = False  # set True if you want to lock 
 
 
 

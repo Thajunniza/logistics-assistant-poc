@@ -36,6 +36,18 @@ from ai.agents.schemas import PatternForecastOutput, LogisticsIssueResolutionOut
 from ai.agents.inventory_supervisor import run as run_inventory_supervisor
 from ai.agents.schemas import InventorySupervisorOutput
 
+# Agentic Final Action generation (Transport Dispatching Agent)  
+from ai.agents.transport_dispatcher import run as run_transport_dispatching
+from ai.agents.schemas import TransportDispatchPlanOutput, InventorySupervisorOutput, PatternForecastOutput, LogisticsIssueResolutionOutput
+
+from fastapi import HTTPException
+
+import json
+from typing import Any, Dict
+from pydantic import BaseModel, Field
+from fastapi import APIRouter
+from ai.llm import call_llm
+
 # -----------------------------------------------------------------------------
 # FastAPI application
 # -----------------------------------------------------------------------------
@@ -73,6 +85,23 @@ class PatternForecastRequest(BaseModel):
 class InventoryOptionsRequest(BaseModel):
     po_number: str
     triggering_event_id: str
+
+class DispatchPlanRequest(BaseModel):
+    po_number: str
+    triggering_event_id: str
+    approved_option_id: str  # "OPT-A" / "OPT-B" / "OPT-C"
+
+
+class RiskQnARequest(BaseModel):
+    question: str = Field(min_length=3)
+    context: Dict[str, Any]
+
+
+class RiskQnAResponse(BaseModel):
+    answer: str
+
+
+
 
 # -----------------------------------------------------------------------------
 # Health check
@@ -170,3 +199,95 @@ def inventory_options(req: InventoryOptionsRequest):
         diagnosis=diagnosis,
         pattern_forecast=forecast,
     )
+
+# -----------------------------------------------------------------------------
+# Transport Dispatching endpoint (agentic)
+# -----------------------------------------------------------------------------
+@app.post("/dispatch-plan", response_model=TransportDispatchPlanOutput)
+def dispatch_plan(req: DispatchPlanRequest):
+    """
+    Agent 4 (Transport Dispatching) — simulated execution plan only.
+
+    Input:
+    - po_number
+    - triggering_event_id
+    - approved_option_id (OPT-A/B/C)
+
+    Output:
+    - TransportDispatchPlanOutput (ordered steps + notifications + completion ETA)
+    """
+
+    # Agent 1: diagnosis
+    diagnosis: LogisticsIssueResolutionOutput = run_issue_resolution(
+        po_number=req.po_number,
+        triggering_event_id=req.triggering_event_id,
+    )
+
+    # Agent 2: pattern forecast
+    forecast: PatternForecastOutput = run_pattern_forecast(
+        po_number=req.po_number,
+        triggering_event_id=req.triggering_event_id,
+        diagnosis=diagnosis,
+    )
+
+    # Agent 3: inventory options (to retrieve the full approved option object)
+    inventory_output: InventorySupervisorOutput = run_inventory_supervisor(
+        po_number=req.po_number,
+        diagnosis=diagnosis,
+        pattern_forecast=forecast,
+    )
+
+    # Agent 4: dispatch plan (simulated, approval-gated)
+    return run_transport_dispatching(
+        po_number=req.po_number,
+        triggering_event_id=req.triggering_event_id,
+        approved_option_id=req.approved_option_id,
+        diagnosis=diagnosis,
+        pattern_forecast=forecast,
+        inventory_output=inventory_output,
+    )
+
+
+RISK_QNA_SYSTEM_PROMPT = """\
+You are a Supply Chain Decision Assistant.
+
+You are answering a follow-up question from the Supply Chain Head about a specific disruption.
+
+You are given structured context (diagnosis, forecast, mitigation options, commitments, and possibly dispatch plan).
+
+STRICT RULES:
+- Use ONLY the provided context.
+- If the context does not contain an answer, say so explicitly.
+- Do NOT approve actions.
+- Do NOT execute actions.
+- Do NOT suggest running SAP systems.
+- If the question is a 'what if', explain implications using existing numbers/trade-offs only.
+
+Return ONLY plain text in the 'answer' field.
+Limit to 4–8 sentences.
+"""
+
+
+@app.post("/risk-qna", response_model=RiskQnAResponse)
+def risk_qna(req: RiskQnARequest):
+    # Basic validation guard: context must be dict
+    if not isinstance(req.context, dict):
+        raise HTTPException(status_code=400, detail="context must be a JSON object")
+
+    user_message = (
+        "CONTEXT (JSON):\n"
+        f"{json.dumps(req.context, indent=2, default=str)}\n\n"
+        f"QUESTION:\n{req.question}\n"
+    )
+
+    # We validate output using a tiny schema for stability
+    result = call_llm(
+        system_prompt=RISK_QNA_SYSTEM_PROMPT,
+        user_message=user_message,
+        response_model=RiskQnAResponse,
+        temperature=0.2,
+        max_tokens=450,
+    )
+
+    return result
+

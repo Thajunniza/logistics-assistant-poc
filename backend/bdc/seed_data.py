@@ -1,14 +1,40 @@
 """
 Seed data for Logistics Assistant POC.
 
-Goal: 4 events total (2 risk events, 2 non-risk events), and demonstrate:
-- One risk event affects multiple shipments, but only some shipments are risks
-- A risk event that makes all impacted shipments risks (delay threshold)
-- A non-risk event due to low severity/low business impact
-- A non-risk event where shipments exist but there are no customer commitments
-
-This data is a mock snapshot of what BDC would contain.
+This is a mock snapshot of what SAP Business Data Cloud (BDC) would contain.
 Agents/UI never import this file directly — only data_product.py reads it.
+
+=============================================================================
+SCENARIO CATALOGUE (8 scenarios across 5 events)
+=============================================================================
+
+EVENT A — Shanghai congestion (4-day delay, HAS systemic historical pattern)
+  - CNSHA-1001 → Helios (platinum) + Triton (gold)  => RISK  [multi-customer]
+  - CNSHA-1002 → Orion (gold, $620K)                => RISK  [revenue trigger]
+  - CNSHA-1003 → Local Distributor TH (std, $90K)   => NON-RISK
+  - CNSHA-1004 → Regional Reseller VN (std, $180K)  => NON-RISK
+
+EVENT B — Rotterdam strike (6-day delay, HAS recurring historical pattern)
+  - NLRTM-2001 → Euro Retail Group (gold, $280K)    => RISK  [delay trigger]
+  - NLRTM-2002 → France Industrial (std, $160K)     => RISK  [delay trigger]
+
+EVENT C — Singapore weather (2-day delay, low impact)
+  - SGSIN-3001 → Small Reseller MY (std, $55K)      => NON-RISK [noise filter]
+
+EVENT D — LA congestion (7-day delay, NO commitments)
+  - USLAX-4001, USLAX-4002 → (no commitments)       => NON-RISK [relevance filter]
+
+EVENT E — Busan customs hold (5-day delay, NO historical pattern)   [NEW]
+  - KRPUS-5001 → Apex Aerospace (platinum, $810K)   => RISK  [one-off forecast]
+
+=============================================================================
+SKU COVERAGE (inventory + alternate suppliers exist for every RISK shipment)
+=============================================================================
+  SKU-ALPHA   (CNSHA-1001) : inventory + alt supplier  ✓
+  SKU-BETA    (CNSHA-1002) : inventory + alt supplier  ✓  [added]
+  SKU-EPSILON (NLRTM-2001) : inventory + alt supplier  ✓
+  SKU-ZETA    (NLRTM-2002) : inventory + alt supplier  ✓  [added]
+  SKU-OMEGA   (KRPUS-5001) : inventory + alt supplier  ✓  [added, one-off scenario]
 """
 
 from __future__ import annotations
@@ -27,17 +53,11 @@ from .models import (
 NOW = datetime(2026, 5, 27, 13, 0, tzinfo=timezone.utc)
 
 # =============================================================================
-# DP5 — Port & Logistics Events (4 total)
+# DP5 — Port & Logistics Events (5 total)
 # =============================================================================
 PORT_EVENTS: list[PortEvent] = [
-    # -------------------------------------------------------------------------
-    # EVENT A (RISK EVENT) — Shanghai congestion, affects 4 shipments
-    # IMPORTANT: expected_duration_days = 4 (< 5) so NOT all shipments become risk.
-    # Only shipments with:
-    #   - revenue >= 250k OR
-    #   - platinum tier
-    # will be detected as risks.
-    # -------------------------------------------------------------------------
+    # EVENT A (RISK) — Shanghai congestion. 4-day delay (< 5) so risk depends on
+    # revenue/tier thresholds. Has a systemic historical pattern (4 in 3 years).
     PortEvent(
         event_id="EVT-CNSHA-2026-05-27-001",
         event_type="port_congestion",
@@ -46,7 +66,7 @@ PORT_EVENTS: list[PortEvent] = [
         location_name="Port of Shanghai",
         severity="high",
         started_at=datetime(2026, 5, 27, 2, 0, tzinfo=timezone.utc),
-        expected_duration_days=4,  # <5 => risk depends on revenue/tier thresholds
+        expected_duration_days=4,
         cause_description="Congestion due to storm recovery and yard backlog",
         affected_vessels=20,
         affected_carrier_ids=["MAERSK-PAC", "COSCO-AS"],
@@ -55,11 +75,8 @@ PORT_EVENTS: list[PortEvent] = [
         last_updated=NOW,
     ),
 
-    # -------------------------------------------------------------------------
-    # EVENT B (RISK EVENT) — Rotterdam strike, affects 2 shipments
-    # expected_duration_days = 6 (>=5) => ANY affected shipment becomes risk
-    # (assuming it has at least one customer commitment).
-    # -------------------------------------------------------------------------
+    # EVENT B (RISK) — Rotterdam strike. 6-day delay (>= 5) so any affected
+    # shipment with a commitment becomes a risk. Recurring historical pattern.
     PortEvent(
         event_id="EVT-NLRTM-2026-05-27-001",
         event_type="port_congestion",
@@ -68,7 +85,7 @@ PORT_EVENTS: list[PortEvent] = [
         location_name="Port of Rotterdam",
         severity="high",
         started_at=datetime(2026, 5, 27, 3, 0, tzinfo=timezone.utc),
-        expected_duration_days=6,  # >=5 => auto-risk for affected shipments with commitments
+        expected_duration_days=6,
         cause_description="Labour strike at terminal gates",
         affected_vessels=18,
         affected_carrier_ids=["MAERSK-EU"],
@@ -77,11 +94,8 @@ PORT_EVENTS: list[PortEvent] = [
         last_updated=NOW,
     ),
 
-    # -------------------------------------------------------------------------
-    # EVENT C (NON-RISK EVENT) — Singapore weather advisory
-    # expected_duration_days = 2 (<5), and impacted shipment has low revenue + standard tier
-    # => should NOT be detected.
-    # -------------------------------------------------------------------------
+    # EVENT C (NON-RISK) — Singapore weather. 2-day delay, low-value standard
+    # customer. Should be filtered out (noise).
     PortEvent(
         event_id="EVT-SGSIN-2026-05-27-001",
         event_type="weather",
@@ -99,11 +113,8 @@ PORT_EVENTS: list[PortEvent] = [
         last_updated=NOW,
     ),
 
-    # -------------------------------------------------------------------------
-    # EVENT D (NON-RISK EVENT) — Los Angeles congestion
-    # expected_duration_days = 7 (>=5) BUT we model shipments with NO commitments
-    # => should NOT be detected because commitments list is empty.
-    # -------------------------------------------------------------------------
+    # EVENT D (NON-RISK) — LA congestion. 7-day delay (>= 5) BUT affected
+    # shipments have NO commitments. Should be filtered out (no business exposure).
     PortEvent(
         event_id="EVT-USLAX-2026-05-27-001",
         event_type="port_congestion",
@@ -120,16 +131,34 @@ PORT_EVENTS: list[PortEvent] = [
         confidence="medium",
         last_updated=NOW,
     ),
+
+    # EVENT E (RISK) — Busan customs hold. 5-day delay, platinum customer.
+    # NO historical pattern at KRPUS => forecast must classify as one-off.
+    # This is the discrimination scenario: proves the forecast agent reasons
+    # from data, not from script.
+    PortEvent(
+        event_id="EVT-KRPUS-2026-05-27-001",
+        event_type="customs_delay",
+        location_type="port",
+        location_code="KRPUS",
+        location_name="Port of Busan",
+        severity="high",
+        started_at=datetime(2026, 5, 27, 6, 0, tzinfo=timezone.utc),
+        expected_duration_days=5,
+        cause_description="Unscheduled customs inspection hold on inbound containers",
+        affected_vessels=4,
+        affected_carrier_ids=["HMM"],
+        reported_by="Customs Authority Feed",
+        confidence="high",
+        last_updated=NOW,
+    ),
 ]
 
 # =============================================================================
 # DP1 — Shipments
 # =============================================================================
 SHIPMENTS: list[Shipment] = [
-    # -------------------------------------------------------------------------
-    # EVENT A (CNSHA) impacts 4 shipments
-    # Two should become RISK (high revenue / platinum), two should be NON-RISK.
-    # -------------------------------------------------------------------------
+    # ---- EVENT A (CNSHA) impacts 4 shipments ----
     Shipment(
         po_number="PO-CNSHA-1001",
         entity="PrismCorp APAC",
@@ -199,9 +228,7 @@ SHIPMENTS: list[Shipment] = [
         last_updated=NOW,
     ),
 
-    # -------------------------------------------------------------------------
-    # EVENT B (NLRTM) impacts 2 shipments (both should be risk due to delay>=5)
-    # -------------------------------------------------------------------------
+    # ---- EVENT B (NLRTM) impacts 2 shipments ----
     Shipment(
         po_number="PO-NLRTM-2001",
         entity="PrismCorp EMEA",
@@ -237,9 +264,7 @@ SHIPMENTS: list[Shipment] = [
         last_updated=NOW,
     ),
 
-    # -------------------------------------------------------------------------
-    # EVENT C (SGSIN) impacts 1 shipment (non-risk)
-    # -------------------------------------------------------------------------
+    # ---- EVENT C (SGSIN) impacts 1 shipment (non-risk) ----
     Shipment(
         po_number="PO-SGSIN-3001",
         entity="PrismCorp APAC",
@@ -258,9 +283,7 @@ SHIPMENTS: list[Shipment] = [
         last_updated=NOW,
     ),
 
-    # -------------------------------------------------------------------------
-    # EVENT D (USLAX) impacts 2 shipments BUT no commitments exist => non-risk
-    # -------------------------------------------------------------------------
+    # ---- EVENT D (USLAX) impacts 2 shipments (NO commitments => non-risk) ----
     Shipment(
         po_number="PO-USLAX-4001",
         entity="PrismCorp AMER",
@@ -295,30 +318,65 @@ SHIPMENTS: list[Shipment] = [
         carrier_id="HAPAG",
         last_updated=NOW,
     ),
+
+    # ---- EVENT E (KRPUS) impacts 1 shipment (one-off RISK) ----  [NEW]
+    Shipment(
+        po_number="PO-KRPUS-5001",
+        entity="PrismCorp APAC",
+        supplier_id="SUP-40",
+        material_sku="SKU-OMEGA",
+        quantity=3500,
+        uom="units",
+        containers=5,
+        shipment_value_usd=1_100_000.0,
+        source_port_code="KRPUS",
+        destination_port_code="JPTYO",
+        original_eta=date(2026, 6, 5),
+        current_eta=date(2026, 6, 5),
+        status="in_transit",
+        carrier_id="HMM",
+        last_updated=NOW,
+    ),
 ]
 
 # =============================================================================
 # DP4 — Customer Commitments
 # =============================================================================
 COMMITMENTS: list[Commitment] = [
-    # EVENT A — PO-CNSHA-1001 => RISK (platinum + high revenue)
+    # ---- EVENT A : CNSHA-1001 => RISK, MULTI-CUSTOMER (platinum + gold) ----
     Commitment(
-        commitment_id="CMT-CNSHA-1001",
+        commitment_id="CMT-CNSHA-1001-A",
         customer_id="CUST-A",
         customer_name="Helios Energy Systems",
         customer_region="Singapore",
-        contract_tier="platinum",  # platinum => risk
+        contract_tier="platinum",
         sku="SKU-ALPHA",
-        committed_quantity=8000,
+        committed_quantity=6000,
         deadline=date(2026, 6, 8),
         supplying_po="PO-CNSHA-1001",
         sla_penalty_per_day_usd=15_000.0,
         sla_penalty_cap_usd=100_000.0,
-        order_value_usd=740_000.0,  # high revenue
+        order_value_usd=740_000.0,
+        status="pending",
+    ),
+    # NEW second commitment on the SAME shipment — the multi-customer scenario
+    Commitment(
+        commitment_id="CMT-CNSHA-1001-B",
+        customer_id="CUST-H",
+        customer_name="Triton Marine Technologies",
+        customer_region="Malaysia",
+        contract_tier="gold",
+        sku="SKU-ALPHA",
+        committed_quantity=2000,
+        deadline=date(2026, 6, 10),
+        supplying_po="PO-CNSHA-1001",
+        sla_penalty_per_day_usd=6_000.0,
+        sla_penalty_cap_usd=40_000.0,
+        order_value_usd=500_000.0,
         status="pending",
     ),
 
-    # EVENT A — PO-CNSHA-1002 => RISK (revenue >= 250k)
+    # ---- EVENT A : CNSHA-1002 => RISK (revenue >= 250k) ----
     Commitment(
         commitment_id="CMT-CNSHA-1002",
         customer_id="CUST-B",
@@ -331,11 +389,11 @@ COMMITMENTS: list[Commitment] = [
         supplying_po="PO-CNSHA-1002",
         sla_penalty_per_day_usd=6_500.0,
         sla_penalty_cap_usd=45_000.0,
-        order_value_usd=620_000.0,  # >=250k => risk
+        order_value_usd=620_000.0,
         status="pending",
     ),
 
-    # EVENT A — PO-CNSHA-1003 => NON-RISK (standard + low revenue)
+    # ---- EVENT A : CNSHA-1003 => NON-RISK ----
     Commitment(
         commitment_id="CMT-CNSHA-1003",
         customer_id="CUST-C",
@@ -348,11 +406,11 @@ COMMITMENTS: list[Commitment] = [
         supplying_po="PO-CNSHA-1003",
         sla_penalty_per_day_usd=1_000.0,
         sla_penalty_cap_usd=5_000.0,
-        order_value_usd=90_000.0,  # <250k => non-risk
+        order_value_usd=90_000.0,
         status="pending",
     ),
 
-    # EVENT A — PO-CNSHA-1004 => NON-RISK (standard + revenue <250k)
+    # ---- EVENT A : CNSHA-1004 => NON-RISK ----
     Commitment(
         commitment_id="CMT-CNSHA-1004",
         customer_id="CUST-D",
@@ -365,11 +423,11 @@ COMMITMENTS: list[Commitment] = [
         supplying_po="PO-CNSHA-1004",
         sla_penalty_per_day_usd=2_000.0,
         sla_penalty_cap_usd=10_000.0,
-        order_value_usd=180_000.0,  # <250k => non-risk
+        order_value_usd=180_000.0,
         status="pending",
     ),
 
-    # EVENT B — both shipments have commitments => risk because event delay >=5
+    # ---- EVENT B : both shipments => RISK (delay >= 5) ----
     Commitment(
         commitment_id="CMT-NLRTM-2001",
         customer_id="CUST-E",
@@ -397,11 +455,11 @@ COMMITMENTS: list[Commitment] = [
         supplying_po="PO-NLRTM-2002",
         sla_penalty_per_day_usd=2_500.0,
         sla_penalty_cap_usd=18_000.0,
-        order_value_usd=160_000.0,  # still risk due to delay>=5
+        order_value_usd=160_000.0,
         status="pending",
     ),
 
-    # EVENT C — non-risk
+    # ---- EVENT C : NON-RISK ----
     Commitment(
         commitment_id="CMT-SGSIN-3001",
         customer_id="CUST-G",
@@ -418,13 +476,31 @@ COMMITMENTS: list[Commitment] = [
         status="pending",
     ),
 
+    # ---- EVENT E : KRPUS-5001 => RISK (platinum), one-off (no pattern) ----  [NEW]
+    Commitment(
+        commitment_id="CMT-KRPUS-5001",
+        customer_id="CUST-I",
+        customer_name="Apex Aerospace Components",
+        customer_region="Japan",
+        contract_tier="platinum",
+        sku="SKU-OMEGA",
+        committed_quantity=3500,
+        deadline=date(2026, 6, 9),
+        supplying_po="PO-KRPUS-5001",
+        sla_penalty_per_day_usd=12_000.0,
+        sla_penalty_cap_usd=80_000.0,
+        order_value_usd=810_000.0,
+        status="pending",
+    ),
+
     # NOTE: EVENT D (USLAX) intentionally has NO commitments
 ]
 
 # =============================================================================
-# DP3 — Inventory (minimal; used later for mitigation options)
+# DP3 — Inventory (one transferable position per RISK SKU)
 # =============================================================================
 INVENTORY: list[InventoryPosition] = [
+    # SKU-ALPHA (CNSHA-1001) — transfer to APAC
     InventoryPosition(
         sku="SKU-ALPHA",
         entity="PrismCorp EMEA",
@@ -438,6 +514,21 @@ INVENTORY: list[InventoryPosition] = [
         transfer_cost_per_unit_usd={"PrismCorp APAC": 10.5},
         last_updated=NOW,
     ),
+    # SKU-BETA (CNSHA-1002) — transfer to APAC  [added]
+    InventoryPosition(
+        sku="SKU-BETA",
+        entity="PrismCorp AMER",
+        warehouse_id="WH-NJ-02",
+        warehouse_region="New Jersey",
+        on_hand=3000,
+        committed=200,
+        available=2800,
+        in_transit_to=0,
+        transfer_lead_days_to={"PrismCorp APAC": 13},
+        transfer_cost_per_unit_usd={"PrismCorp APAC": 12.0},
+        last_updated=NOW,
+    ),
+    # SKU-EPSILON (NLRTM-2001) — transfer to EMEA
     InventoryPosition(
         sku="SKU-EPSILON",
         entity="PrismCorp AMER",
@@ -451,25 +542,70 @@ INVENTORY: list[InventoryPosition] = [
         transfer_cost_per_unit_usd={"PrismCorp EMEA": 9.2},
         last_updated=NOW,
     ),
+    # SKU-ZETA (NLRTM-2002) — transfer to EMEA  [added]
+    InventoryPosition(
+        sku="SKU-ZETA",
+        entity="PrismCorp APAC",
+        warehouse_id="WH-SIN-01",
+        warehouse_region="Singapore",
+        on_hand=3200,
+        committed=600,
+        available=2600,
+        in_transit_to=0,
+        transfer_lead_days_to={"PrismCorp EMEA": 12},
+        transfer_cost_per_unit_usd={"PrismCorp EMEA": 8.4},
+        last_updated=NOW,
+    ),
+    # SKU-OMEGA (KRPUS-5001) — transfer to APAC  [added, one-off scenario]
+    InventoryPosition(
+        sku="SKU-OMEGA",
+        entity="PrismCorp EMEA",
+        warehouse_id="WH-HAM-01",
+        warehouse_region="Hamburg",
+        on_hand=2000,
+        committed=0,
+        available=2000,
+        in_transit_to=0,
+        transfer_lead_days_to={"PrismCorp APAC": 14},
+        transfer_cost_per_unit_usd={"PrismCorp APAC": 13.5},
+        last_updated=NOW,
+    ),
 ]
 
 # =============================================================================
-# DP2 — Suppliers (minimal; used later for mitigation options)
+# DP2 — Suppliers (primary + at least one alternate per RISK SKU)
 # =============================================================================
 SUPPLIERS: list[Supplier] = [
+    # ---- Primary suppliers (referenced by shipments) ----
     Supplier(
         supplier_id="SUP-01",
         supplier_name="Meridian Pacific Components Ltd",
         region="China",
         tier="tier1_strategic",
         quality_rating="AA",
-        skus_supplied=["SKU-ALPHA", "SKU-BETA", "SKU-GAMMA", "SKU-DELTA"],
+        skus_supplied=["SKU-ALPHA", "SKU-GAMMA", "SKU-DELTA"],
         typical_lead_time_days=18,
         price_index=1.00,
         max_capacity_per_month=12000,
         current_capacity_status="constrained",
         contract_status="active",
     ),
+    Supplier(
+        supplier_id="SUP-02",
+        supplier_name="Eastwind Manufacturing Co",
+        region="China",
+        tier="tier1",
+        quality_rating="A",
+        skus_supplied=["SKU-BETA"],
+        typical_lead_time_days=16,
+        price_index=1.00,
+        max_capacity_per_month=9000,
+        current_capacity_status="constrained",
+        contract_status="active",
+    ),
+
+    # ---- Alternate suppliers (one per RISK SKU, exclude primary) ----
+    # SKU-ALPHA alternate
     Supplier(
         supplier_id="SUP-12",
         supplier_name="Sentinel Filtration GmbH",
@@ -483,10 +619,53 @@ SUPPLIERS: list[Supplier] = [
         current_capacity_status="available",
         contract_status="framework_only",
     ),
+    # SKU-BETA alternate  [added]
+    Supplier(
+        supplier_id="SUP-13",
+        supplier_name="Hokkaido Precision Works",
+        region="Japan",
+        tier="tier1",
+        quality_rating="AA",
+        skus_supplied=["SKU-BETA"],
+        typical_lead_time_days=12,
+        price_index=1.11,
+        max_capacity_per_month=7000,
+        current_capacity_status="available",
+        contract_status="framework_only",
+    ),
+    # SKU-ZETA alternate  [added]
+    Supplier(
+        supplier_id="SUP-14",
+        supplier_name="Iberia Components SA",
+        region="Spain",
+        tier="tier2",
+        quality_rating="A",
+        skus_supplied=["SKU-ZETA"],
+        typical_lead_time_days=10,
+        price_index=1.15,
+        max_capacity_per_month=6000,
+        current_capacity_status="available",
+        contract_status="framework_only",
+    ),
+    # SKU-OMEGA alternate  [added, one-off scenario]
+    Supplier(
+        supplier_id="SUP-15",
+        supplier_name="Nordic Aerotech AB",
+        region="Sweden",
+        tier="tier1",
+        quality_rating="AA",
+        skus_supplied=["SKU-OMEGA"],
+        typical_lead_time_days=15,
+        price_index=1.10,
+        max_capacity_per_month=5000,
+        current_capacity_status="available",
+        contract_status="framework_only",
+    ),
 ]
 
 # =============================================================================
-# DP6 — Historical Patterns (minimal; used later for pattern forecast agent)
+# DP6 — Historical Patterns
+# Note: deliberately NO pattern for KRPUS (the one-off scenario).
 # =============================================================================
 PATTERNS: list[DisruptionPattern] = [
     DisruptionPattern(
@@ -515,4 +694,6 @@ PATTERNS: list[DisruptionPattern] = [
         typical_root_causes=["labour_dispute"],
         typical_resolution_paths=["alternate_port", "expedited_trucking"],
     ),
+    # NOTE: No pattern for KRPUS customs_delay => forecast agent must classify
+    # EVENT E as one-off with low confidence.
 ]

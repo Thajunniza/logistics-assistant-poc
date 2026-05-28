@@ -1,5 +1,5 @@
 """
-Inventory Supervisor Agent (Agent 3) — POC
+Inventory Supervisor Agent (Agent 3)
 
 Goal:
 - Generate exactly 3 mitigation options (OPT-A/B/C) with quantified trade-offs
@@ -10,8 +10,13 @@ Goal:
 - NO recommendation selection here: recommended=False for all options.
   Orchestrator will choose later.
 
-Why it matters:
-- This is where decision latency is reduced by surfacing alternatives proactively. (PrismCorp case study)
+Fixes in this version:
+- Dynamic port/location name (no hardcoded "Shanghai")
+- Explicit structural element named in OPT-C when posture is structural/hybrid
+- Graceful handling when no inventory or no alternate supplier exists
+- Multi-customer awareness: prompt requires addressing all affected customers,
+  and computes coverage when inventory is partial
+- Transfer coverage flag so the trade-off text is honest about partial fulfilment
 """
 
 from __future__ import annotations
@@ -41,28 +46,40 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # POC constants (explicit, reviewer-safe assumptions)
 # -----------------------------------------------------------------------------
-EXPEDITE_PREMIUM_RATE = 0.12               # 12% of shipment value (POC assumption; explicit)
-ALTERNATE_SUPPLIER_PREMIUM_RATE = 0.18     # Step A: ensure alternate sourcing is clearly premium (POC tuned)
-ADMIN_STRUCTURAL_COST_USD = 5000.0         # small admin cost for structural follow-up (POC)
+EXPEDITE_PREMIUM_RATE = 0.12               # 12% of shipment value (POC assumption)
+ALTERNATE_SUPPLIER_PREMIUM_RATE = 0.18     # ensure alternate sourcing is clearly premium
+ADMIN_STRUCTURAL_COST_USD = 5000.0         # admin cost for structural follow-up (POC)
+NO_OPTION_SENTINEL_DAYS = 999              # marks an unavailable lever
 
 
 SYSTEM_PROMPT = """\
-You are the Inventory Supervisor Agent in PrismCorp's Logistics Assistant.
+You are the Inventory Supervisor Agent in PrismCorp's Logistics Assistant on SAP BTP.
 
 Your job:
 - Produce EXACTLY 3 options: OPT-A, OPT-B, OPT-C.
 - Each option must be genuinely different in approach.
-- Use the provided data and the numeric fields supplied in the option templates.
-- DO NOT change the numeric values provided in the templates.
+- Use the numeric fields supplied in option_templates EXACTLY. Do NOT change them.
 - DO NOT mark any option as recommended (recommended must be false for all).
 
-Posture shaping:
-- If posture is 'structural' or 'hybrid', ensure at least one option includes a structural follow-up action
-  (e.g., dual-sourcing / contract change), in addition to immediate mitigation.
+Posture shaping (from the Pattern Forecast agent):
+- If posture is 'structural' or 'hybrid', OPT-C MUST include an explicit structural
+  follow-up action that addresses the RECURRING pattern — not just this one shipment.
+  Name it concretely (e.g. "establish a standing dual-source agreement with <supplier>
+  for <location> to reduce recurring exposure"). Use the structural_hint provided.
+- If posture is 'tactical', all three options should be immediate fixes only.
+  Do NOT propose structural/long-term actions for a one-off event.
+
+Multi-customer requirement:
+- The commitments list may contain MORE THAN ONE customer for this shipment.
+- Customer impact for each option MUST name every affected customer and state what
+  each one receives (full, partial, or delayed). If an option cannot serve everyone,
+  say so honestly in the trade-off — name who is prioritised and who slips.
 
 Quality requirements:
-- Customer impact must mention real customer names from commitments.
+- Customer impact must mention the real customer names from commitments.
 - Trade-off must be honest and clearly state what is sacrificed.
+- Use the location_name provided for any reference to where the disruption is — never
+  assume a location.
 
 Output must match the schema exactly.
 """
@@ -72,85 +89,67 @@ Output must match the schema exactly.
 class _OptionNumbers:
     cost_delta_usd: float
     sla_recovery_days: int
+    covers_full_quantity: bool = True
 
 
 def _pick_destination_entity(shipment) -> str:
-    # Treat shipment.entity as destination business entity for transfer calculations
     return shipment.entity
 
 
 def _tier_rank(tier: str) -> int:
-    # Used for customer prioritisation; smaller is higher priority
     return {"platinum": 0, "gold": 1, "silver": 2, "standard": 3}.get(tier, 9)
 
 
 def _choose_best_inventory_source(inventory_positions, dest_entity: str) -> Optional[Tuple[object, float, int]]:
-    """
-    Pick the best inventory position outside the destination entity:
-    - has available > 0
-    - has transfer cost and lead-time to dest_entity
-
-    Returns: (inventory_position, cost_per_unit, lead_days)
-    """
+    """Pick cheapest-then-fastest inventory position outside the destination entity."""
     candidates = []
     for p in inventory_positions:
-        if p.available <= 0:
+        if p.available <= 0 or p.entity == dest_entity:
             continue
-        if p.entity == dest_entity:
-            continue
-
         cost_map = getattr(p, "transfer_cost_per_unit_usd", {}) or {}
         lead_map = getattr(p, "transfer_lead_days_to", {}) or {}
-
         cost = cost_map.get(dest_entity)
         lead = lead_map.get(dest_entity)
-
-        # Keep numeric grounding strict: if we can't compute, we skip
         if cost is None or lead is None:
             continue
-
         candidates.append((p, float(cost), int(lead)))
-
     if not candidates:
         return None
-
-    # Cheapest cost first, then fastest lead time
     candidates.sort(key=lambda x: (x[1], x[2]))
     return candidates[0]
 
 
+def _total_committed_quantity(commitments) -> int:
+    return sum(int(c.committed_quantity) for c in commitments)
+
+
 def _compute_transfer_option(commitments, inventory_pick) -> _OptionNumbers:
     """
-    Compute internal transfer numbers:
-    - Transfer units to cover highest priority commitments first, limited by available.
+    Internal transfer numbers:
+    - Transfer units to cover highest-priority commitments first, limited by available.
     - Cost delta = units_transferred * cost_per_unit
     - SLA recovery days = lead_days
+    - covers_full_quantity = whether available stock met total demand
     """
     p, cost_per_unit, lead_days = inventory_pick
-
     remaining = int(p.available)
+    total_needed = _total_committed_quantity(commitments)
     units_to_transfer = 0
 
-    ordered = sorted(
-        commitments,
-        key=lambda c: (_tier_rank(c.contract_tier), c.deadline),
-    )
+    ordered = sorted(commitments, key=lambda c: (_tier_rank(c.contract_tier), c.deadline))
     for c in ordered:
         if remaining <= 0:
             break
-        need = int(c.committed_quantity)
-        take = min(need, remaining)
+        take = min(int(c.committed_quantity), remaining)
         units_to_transfer += take
         remaining -= take
 
     cost_delta = units_to_transfer * cost_per_unit
-    return _OptionNumbers(cost_delta_usd=round(cost_delta, 2), sla_recovery_days=lead_days)
+    covers_full = units_to_transfer >= total_needed
+    return _OptionNumbers(round(cost_delta, 2), lead_days, covers_full)
 
 
 def _choose_best_alternate_supplier(alternates) -> Optional[object]:
-    """
-    Choose cheapest usable alternate supplier by price_index.
-    """
     if not alternates:
         return None
     usable = [s for s in alternates if getattr(s, "current_capacity_status", "available") != "unavailable"]
@@ -161,34 +160,20 @@ def _choose_best_alternate_supplier(alternates) -> Optional[object]:
 
 
 def _compute_alternate_supplier_option(diagnosis: LogisticsIssueResolutionOutput, supplier) -> _OptionNumbers:
-    """
-    Step A tuning:
-    - Ensure alternate supplier has a clearly premium cost delta.
-    - Use max(ALTERNATE_SUPPLIER_PREMIUM_RATE, (price_index - 1.0))
-
-    Cost delta = revenue_at_risk_usd * premium
-    SLA recovery days = supplier typical lead time
-    """
     revenue = float(diagnosis.business_impact.revenue_at_risk_usd)
     price_index = float(getattr(supplier, "price_index", 1.0))
     premium = max(ALTERNATE_SUPPLIER_PREMIUM_RATE, price_index - 1.0)
-
     cost_delta = revenue * premium
     lead = int(getattr(supplier, "typical_lead_time_days", 14))
-    return _OptionNumbers(cost_delta_usd=round(cost_delta, 2), sla_recovery_days=lead)
+    return _OptionNumbers(round(cost_delta, 2), lead, True)
 
 
 def _compute_expedite_option(shipment, diagnosis: LogisticsIssueResolutionOutput) -> _OptionNumbers:
-    """
-    Expedite: explicit premium rate on shipment value (POC assumption).
-    SLA recovery days: assume expedite reduces effective recovery time.
-    """
     shipment_value = float(getattr(shipment, "shipment_value_usd", 0.0))
     cost_delta = shipment_value * EXPEDITE_PREMIUM_RATE
-
     base_delay = int(diagnosis.business_impact.predicted_delay_days)
     sla_days = max(1, base_delay - 2)
-    return _OptionNumbers(cost_delta_usd=round(cost_delta, 2), sla_recovery_days=sla_days)
+    return _OptionNumbers(round(cost_delta, 2), sla_days, True)
 
 
 def run(
@@ -196,26 +181,12 @@ def run(
     diagnosis: LogisticsIssueResolutionOutput,
     pattern_forecast: Optional[PatternForecastOutput] = None,
 ) -> InventorySupervisorOutput:
-    """
-    Generate 3 mitigation options and return InventorySupervisorOutput.
-
-    Inputs:
-    - po_number: shipment identifier
-    - diagnosis: Agent 1 output
-    - pattern_forecast: Agent 2 output (may be None)
-
-    BDC data products:
-    - DP1 shipment -> SKU/entity
-    - DP4 commitments -> customer names, deadlines, quantities
-    - DP3 inventory -> transfer options (lead/cost)
-    - DP2 alternates -> supplier options (lead/premium)
-    """
+    """Generate 3 mitigation options and return InventorySupervisorOutput."""
 
     shipment = get_shipment(po_number)
     if shipment is None:
         raise ValueError(f"Shipment {po_number} not found")
 
-    # DP4 commitments (required for customer names + deadlines)
     commitments = get_commitments_for_shipment(po_number)
     if not commitments:
         raise ValueError(f"No commitments found for shipment {po_number} (DP4 required)")
@@ -223,54 +194,84 @@ def run(
     sku = shipment.material_sku
     dest_entity = _pick_destination_entity(shipment)
 
-    # DP3 inventory
     inventory_positions = get_inventory_for_sku(sku)
-
-    # DP2 suppliers (exclude current supplier)
     alternates = get_alternate_suppliers(sku, exclude_supplier_id=shipment.supplier_id)
 
     posture = pattern_forecast.recommendation if pattern_forecast else "tactical"
+
+    # Dynamic location + structural hint (FIX: no hardcoded "Shanghai")
+    location_name = getattr(shipment, "source_port_code", "the origin port")
+    # Prefer a human-readable port name if your shipment carries one; else use code.
+    location_label = getattr(shipment, "source_port_name", None) or location_name
+
+    best_alt = _choose_best_alternate_supplier(alternates)
+    alt_name = getattr(best_alt, "supplier_name", "a qualified alternate supplier") if best_alt else "a qualified alternate supplier"
+    structural_hint = (
+        f"Establish a standing dual-source agreement with {alt_name} for shipments routed "
+        f"through {location_label}, reducing exposure to recurring disruption at this location."
+    )
 
     # ----------------------------
     # Precompute grounded numbers
     # ----------------------------
     inventory_pick = _choose_best_inventory_source(inventory_positions, dest_entity)
-    best_alt = _choose_best_alternate_supplier(alternates)
 
-    # OPT-A (internal transfer)
     if inventory_pick:
         opt_a = _compute_transfer_option(commitments, inventory_pick)
+        opt_a_available = True
     else:
-        opt_a = _OptionNumbers(cost_delta_usd=0.0, sla_recovery_days=999)  # will be explained via trade-off text
+        opt_a = _OptionNumbers(0.0, NO_OPTION_SENTINEL_DAYS, False)
+        opt_a_available = False
 
-    # OPT-B (alternate supplier)
     if best_alt:
         opt_b = _compute_alternate_supplier_option(diagnosis, best_alt)
+        opt_b_available = True
     else:
-        opt_b = _OptionNumbers(cost_delta_usd=0.0, sla_recovery_days=999)
+        opt_b = _OptionNumbers(0.0, NO_OPTION_SENTINEL_DAYS, True)
+        opt_b_available = False
 
-    # OPT-C (expedite or hybrid)
     opt_c = _compute_expedite_option(shipment, diagnosis)
-
-    # Structural/hybrid posture: add explicit admin cost to represent follow-up work
     if posture in ("structural", "hybrid"):
         opt_c = _OptionNumbers(
-            cost_delta_usd=round(opt_c.cost_delta_usd + ADMIN_STRUCTURAL_COST_USD, 2),
-            sla_recovery_days=opt_c.sla_recovery_days,
+            round(opt_c.cost_delta_usd + ADMIN_STRUCTURAL_COST_USD, 2),
+            opt_c.sla_recovery_days,
+            opt_c.covers_full_quantity,
         )
 
     # ----------------------------
     # Option templates (numbers locked)
     # ----------------------------
     option_templates = [
-        {"option_id": "OPT-A", "approach": "internal_transfer", "cost_delta_usd": opt_a.cost_delta_usd, "sla_recovery_days": opt_a.sla_recovery_days},
-        {"option_id": "OPT-B", "approach": "alternate_supplier", "cost_delta_usd": opt_b.cost_delta_usd, "sla_recovery_days": opt_b.sla_recovery_days},
-        {"option_id": "OPT-C", "approach": "hybrid" if posture in ("structural", "hybrid") else "expedited_freight", "cost_delta_usd": opt_c.cost_delta_usd, "sla_recovery_days": opt_c.sla_recovery_days},
+        {
+            "option_id": "OPT-A",
+            "approach": "internal_transfer",
+            "available": opt_a_available,
+            "covers_full_quantity": opt_a.covers_full_quantity,
+            "cost_delta_usd": opt_a.cost_delta_usd,
+            "sla_recovery_days": opt_a.sla_recovery_days,
+        },
+        {
+            "option_id": "OPT-B",
+            "approach": "alternate_supplier",
+            "available": opt_b_available,
+            "covers_full_quantity": True,
+            "cost_delta_usd": opt_b.cost_delta_usd,
+            "sla_recovery_days": opt_b.sla_recovery_days,
+        },
+        {
+            "option_id": "OPT-C",
+            "approach": "hybrid" if posture in ("structural", "hybrid") else "expedited_freight",
+            "available": True,
+            "covers_full_quantity": True,
+            "cost_delta_usd": opt_c.cost_delta_usd,
+            "sla_recovery_days": opt_c.sla_recovery_days,
+        },
     ]
 
-    # Context payload
     context = {
         "posture": posture,
+        "location_name": location_label,
+        "structural_hint": structural_hint,
         "shipment": shipment.model_dump(mode="json"),
         "diagnosis": diagnosis.model_dump(mode="json"),
         "pattern_forecast": pattern_forecast.model_dump(mode="json") if pattern_forecast else None,
@@ -282,15 +283,21 @@ def run(
             "recommended_must_be_false": True,
             "must_return_exactly_three_options": True,
             "must_keep_numbers_from_templates": True,
-            "must_include_customer_names_in_customer_impact": True,
+            "must_include_all_customer_names_in_customer_impact": True,
             "must_produce_distinct_approaches": True,
+            "structural_required_when_posture_structural_or_hybrid": posture in ("structural", "hybrid"),
+            "if_option_not_available_explain_in_tradeoff": True,
         },
     }
 
     user_message = (
         "Create exactly 3 mitigation options based on the context. "
         "Use the option_templates numbers exactly as provided. "
-        "Set recommended=false for all options.\n\n"
+        "Set recommended=false for all options. "
+        "Reference the disruption location only as the provided location_name. "
+        "If an option_template has available=false, still produce the option but make the "
+        "trade-off clearly state that this lever is not currently available and why "
+        "(e.g. no transferable inventory, or no alternate supplier qualified for this SKU).\n\n"
         f"{json.dumps(context, indent=2, default=str)}"
     )
 
@@ -306,7 +313,7 @@ def run(
     if ids != {"OPT-A", "OPT-B", "OPT-C"}:
         raise ValueError(f"Agent 3 returned wrong option IDs: {ids}")
 
-    # Enforce recommended=False and enforce numeric fields from templates
+    # Enforce recommended=False and lock numeric fields from templates
     template_map = {t["option_id"]: t for t in option_templates}
     for o in result.options:
         o.recommended = False
@@ -314,13 +321,22 @@ def run(
         o.cost_delta_usd = float(tpl["cost_delta_usd"])
         o.sla_recovery_days = int(tpl["sla_recovery_days"])
 
-    # Step A tuning: stronger, briefing-style notes
-    result.notes = (
-        "This disruption reflects a recurring systemic pattern at the Port of Shanghai. "
-        "At least one option should address long‑term mitigation in addition to resolving the immediate delay."
-        if posture in ("structural", "hybrid")
-        else "This appears tactical; prioritise fastest SLA recovery with the least operational disruption."
-    )
+    # Dynamic posture note (FIX: no hardcoded location)
+    if posture in ("structural", "hybrid"):
+        result.notes = (
+            f"This disruption at {location_label} reflects a recurring pattern. "
+            f"At least one option addresses long-term mitigation in addition to resolving "
+            f"the immediate delay."
+        )
+    else:
+        result.notes = (
+            f"This appears to be a one-off disruption at {location_label}. "
+            f"Prioritise fastest SLA recovery with the least operational disruption; "
+            f"structural change is not warranted on current evidence."
+        )
 
-    logger.info("Inventory Supervisor generated 3 options for %s (posture=%s)", po_number, posture)
+    logger.info(
+        "Inventory Supervisor: 3 options for %s (posture=%s, location=%s)",
+        po_number, posture, location_label,
+    )
     return result

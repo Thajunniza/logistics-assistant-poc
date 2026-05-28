@@ -1,0 +1,5 @@
+[
+  {"q": "Why is OPT-C recommended?", "expected_traits": ["mentions SLA recovery", "mentions cost trade-off", "mentions systemic posture"]},
+  {"q": "What is Helios SLA cap?", "expected_traits": ["uses commitment data", "does not hallucinate"]},
+  {"q": "What if we accept Triton penalty?", "expected_traits": ["explains implication", "states assumptions", "no execution"]}
+]
