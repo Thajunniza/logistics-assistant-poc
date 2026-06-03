@@ -143,6 +143,12 @@ def run(
         f"{json.dumps(context, indent=2, default=str)}"
     )
 
-    result = call_llm(SYSTEM_PROMPT, user_message, PatternForecastOutput)
+    result = call_llm(
+        SYSTEM_PROMPT, 
+        user_message, 
+        PatternForecastOutput,
+        agent_name="Pattern Forecast",
+        user_name="thajunniza.a@aptiv.com",
+        )
     logger.info("Pattern forecast: %s [%s]", result.classification, result.confidence)
     return result

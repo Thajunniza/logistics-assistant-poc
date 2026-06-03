@@ -301,7 +301,13 @@ def run(
         f"{json.dumps(context, indent=2, default=str)}"
     )
 
-    result = call_llm(SYSTEM_PROMPT, user_message, InventorySupervisorOutput)
+    result = call_llm(
+        SYSTEM_PROMPT, 
+        user_message, 
+        InventorySupervisorOutput,
+        agent_name="Inventory Supervisor",
+        user_name="thajunniza.a@aptiv.com",
+        )
 
     # ----------------------------
     # Post-validation guards

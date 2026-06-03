@@ -68,8 +68,13 @@ def run(po_number: str, triggering_event_id: str) -> LogisticsIssueResolutionOut
         "Diagnose the issue. Predict the customer impact before it materialises."
     )
 
-    result = call_llm(SYSTEM_PROMPT, user_message, LogisticsIssueResolutionOutput)
-
+    result = call_llm(
+        SYSTEM_PROMPT, 
+        user_message, 
+        LogisticsIssueResolutionOutput,
+        agent_name="Logistics Issue Resolution",
+        user_name="thajunniza.a@aptiv.com",
+        )
     # ensure affected_order is set (either by model or force it here)
     if not getattr(result, "affected_order", None):
         result.affected_order = po_number  # type: ignore
